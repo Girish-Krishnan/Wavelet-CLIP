@@ -45,12 +45,14 @@ class SAM(torch.optim.Optimizer):
     def second_step(self, zero_grad=False):
         for group in self.param_groups:
             for p in group["params"]:
-                if p.grad is None: continue
+                if p.grad is None or "e_w" not in self.state[p]:  # Skip if "e_w" not set
+                    continue
                 p.sub_(self.state[p]["e_w"])  # get back to "w" from "w + e(w)"
 
         self.base_optimizer.step()  # do the actual "sharpness-aware" update
 
-        if zero_grad: self.zero_grad()
+        if zero_grad:
+            self.zero_grad()
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -62,13 +64,12 @@ class SAM(torch.optim.Optimizer):
         self.second_step()
 
     def _grad_norm(self):
-        shared_device = self.param_groups[0]["params"][0].device  # put everything on the same device, in case of model parallelism
-        norm = torch.norm(
-                    torch.stack([
-                        p.grad.norm(p=2).to(shared_device)
-                        for group in self.param_groups for p in group["params"]
-                        if p.grad is not None
-                    ]),
-                    p=2
-               )
-        return norm
+        shared_device = self.param_groups[0]["params"][0].device
+        grad_norms = [
+            p.grad.norm(p=2).to(shared_device)
+            for group in self.param_groups for p in group["params"]
+            if p.grad is not None  # Check if grad is not None
+        ]
+        if len(grad_norms) == 0:
+            return torch.tensor(0., device=shared_device)  # Return 0 if no gradients are available
+        return torch.norm(torch.stack(grad_norms), p=2)
